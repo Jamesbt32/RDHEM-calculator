@@ -5,44 +5,34 @@ import plotly.graph_objects as go
 import numpy as np
 
 # ==================================================
-# PAGE CONFIG
+# PAGE CONFIG & TITLE
 # ==================================================
 
 st.set_page_config(page_title="RDHEM Full Model", layout="wide")
 st.title("RDHEM Heating Technology Cost, Energy, Carbon & Payback Model")
 
 st.info(
-    "Default assumptions align with DESNZ policy analysis. "
-    "All technology parameters are editable for sensitivity and scenario testing."
+    "Default efficiency (COP) assumptions are based on UK Government policy analysis "
+    "from the Department for Energy Security & Net Zero (DESNZ): "
+    "'Alternative Low-Carbon Heating Technology Costs – Analytical Annex "
+    "(Annex B: System Efficiency)'. "
+    "All technology parameters are editable for sensitivity testing."
 )
 
 # ==================================================
 # FORMULAS
 # ==================================================
 
-show_formula = st.checkbox("Show calculation formulas", key="show_formulas")
+show_formula = st.checkbox("Show calculation formulas")
 
 if show_formula:
     st.markdown("""
     **Electrical demand (kWh)** = Heat demand ÷ Efficiency  
-    **Dynamic cost (p/kWh)** = Base cost × (1 − Smart tariff discount)  
+    **Dynamic cost (p/kWh)** = Base electricity price × (1 − Smart tariff discount)  
     **Annual cost (£/yr)** = Electrical demand × Dynamic cost ÷ 100  
-    **CO₂ (kg/yr)** = Electrical demand × CO₂ factor  
-    **Payback** = Δ Capex ÷ Annual cost saving
-    """)
-
-# ==================================================
-# GLOSSARY
-# ==================================================
-
-with st.expander("📘 Glossary"):
-    st.markdown("""
-    **Efficiency / COP** – Heat output per unit electricity input  
-    **Electrical Demand** – Annual electricity required  
-    **Dynamic Cost** – Electricity price after smart tariff discount  
-    **Annual Cost** – Annual running cost (£/yr)  
-    **CO₂** – Annual operational emissions (kg)  
-    **Payback** – Time to recover additional capex
+    **Extra capex** = Installation cost − Baseline installation cost  
+    **Effective extra capex** = Extra capex − Technology-specific grant  
+    **Payback** = Effective extra capex ÷ Annual bill savings
     """)
 
 # ==================================================
@@ -50,8 +40,8 @@ with st.expander("📘 Glossary"):
 # ==================================================
 
 technologies = [
-    "LTASHP","HTASHP","LTGSHP","AAHP",
-    "Storage Heater","Electric Boiler","Infrared Heater"
+    "LTASHP","HTASHP","LTGSHP",
+    "AAHP","Storage Heater","Electric Boiler","Infrared Heater"
 ]
 
 heat_demand_lookup = {
@@ -62,7 +52,7 @@ heat_demand_lookup = {
 
 defaults = {
     "base_costs": dict(zip(technologies,[16.0,17.0,18.9,20.3,22.8,28.0,29.4])),
-    "efficiencies": dict(zip(technologies,[2.86,2.73,3.53,2.04,1.0,1.0,1.0])),
+    "efficiencies": dict(zip(technologies,[2.86,2.73,3.53,2.04,1,1,1])),
     "co2_factors": dict(zip(technologies,[0.074,0.077,0.060,0.103,0.222,0.211,0.211])),
     "install_costs": dict(zip(technologies,[12000,14000,20000,6800,4500,5000,6500]))
 }
@@ -72,54 +62,46 @@ for k, v in defaults.items():
         st.session_state[k] = v.copy()
 
 # ==================================================
-# SIDEBAR — SCENARIOS
+# SIDEBAR — SCENARIO
 # ==================================================
 
-st.sidebar.header("Scenario A")
+st.sidebar.header("Scenario")
 
-archetype = st.sidebar.selectbox(
-    "Housing archetype",
-    heat_demand_lookup,
-    key="archetype"
-)
+archetype = st.sidebar.selectbox("Housing archetype", heat_demand_lookup)
+baseline = st.sidebar.selectbox("Baseline technology", technologies)
+discount = st.sidebar.slider("Smart tariff discount (%)", 0, 50, 10)
 
-baseline_A = st.sidebar.selectbox(
-    "Baseline technology",
-    technologies,
-    key="baseline_A"
-)
-
-discount_A = st.sidebar.slider(
-    "Smart tariff discount (%)",
-    0, 50, 10,
-    key="discount_A"
-)
+# ==================================================
+# SIDEBAR — TECHNOLOGY-SPECIFIC GRANTS
+# ==================================================
 
 st.sidebar.divider()
-st.sidebar.header("Scenario B (comparison)")
+st.sidebar.header("Grants / Subsidies")
 
-enable_B = st.sidebar.checkbox(
-    "Enable Scenario B",
-    key="enable_B"
+enable_grant = st.sidebar.checkbox(
+    "Apply technology-specific grant",
+    help="Grant applies only to the selected technology and reduces its extra capex vs baseline."
 )
 
-discount_B = st.sidebar.slider(
-    "Smart tariff discount B (%)",
-    0, 50, discount_A,
-    disabled=not enable_B,
-    key="discount_B"
+grant_tech = st.sidebar.selectbox(
+    "Grant applies to technology",
+    technologies,
+    disabled=not enable_grant
 )
 
-eff_mult_B = st.sidebar.slider(
-    "Efficiency multiplier B",
-    0.8, 1.2, 1.0, 0.05,
-    disabled=not enable_B,
-    help=(
-        "Scenario-wide adjustment applied to all technology efficiencies in Scenario B. "
-        "Used to test optimistic or pessimistic real-world system performance "
-        "(e.g. commissioning quality, climate, user behaviour)."
-    ),
-    key="eff_mult_B"
+grant_type = st.sidebar.radio(
+    "Grant type",
+    ["Flat amount (£)", "Percentage of extra capex"],
+    disabled=not enable_grant
+)
+
+grant_value = st.sidebar.number_input(
+    "Grant value",
+    min_value=0.0,
+    max_value=30000.0,
+    value=7500.0,
+    step=500.0,
+    disabled=not enable_grant
 )
 
 # ==================================================
@@ -131,31 +113,23 @@ st.sidebar.header("Edit Technologies")
 
 for tech in technologies:
     with st.sidebar.expander(tech):
-
         st.session_state.base_costs[tech] = st.number_input(
-            "Base cost (p/kWh)",
-            1.0, 60.0,
+            "Base cost (p/kWh)", 1.0, 60.0,
             float(st.session_state.base_costs[tech]), 0.1,
-            key=f"base_{tech}"
+            key=f"bc_{tech}"
         )
-
         st.session_state.efficiencies[tech] = st.number_input(
-            "Efficiency / COP",
-            0.5, 6.0,
+            "Efficiency / COP", 0.5, 6.0,
             float(st.session_state.efficiencies[tech]), 0.1,
             key=f"eff_{tech}"
         )
-
         st.session_state.co2_factors[tech] = st.number_input(
-            "CO₂ factor (kg/kWh)",
-            0.01, 1.0,
+            "CO₂ factor (kg/kWh)", 0.01, 1.0,
             float(st.session_state.co2_factors[tech]), 0.01,
             key=f"co2_{tech}"
         )
-
         st.session_state.install_costs[tech] = st.number_input(
-            "Installation cost (£)",
-            1000, 50000,
+            "Installation cost (£)", 1000, 50000,
             int(st.session_state.install_costs[tech]), 500,
             key=f"capex_{tech}"
         )
@@ -164,127 +138,128 @@ for tech in technologies:
 # MODEL
 # ==================================================
 
-def run_model(discount, eff_mult):
-    hd = heat_demand_lookup[archetype]
-    df = pd.DataFrame({"Technology": technologies})
-    df["Efficiency"] = df["Technology"].map(st.session_state.efficiencies) * eff_mult
-    df["Electrical Demand"] = hd / df["Efficiency"]
-    df["Dynamic Cost"] = df["Technology"].map(st.session_state.base_costs) * (1 - discount / 100)
-    df["Annual Cost"] = df["Electrical Demand"] * df["Dynamic Cost"] / 100
-    df["CO2"] = df["Electrical Demand"] * df["Technology"].map(st.session_state.co2_factors)
-    df["Capex"] = df["Technology"].map(st.session_state.install_costs)
-    return df
+heat_demand = heat_demand_lookup[archetype]
+df = pd.DataFrame({"Technology": technologies})
 
-df_A = run_model(discount_A, 1.0)
-df_B = run_model(discount_B, eff_mult_B) if enable_B else None
+df["Efficiency"] = df["Technology"].map(st.session_state.efficiencies)
+df["Electrical Demand (kWh)"] = (heat_demand / df["Efficiency"]).round(2)
 
-# ==================================================
-# SUMMARY TABLES
-# ==================================================
+df["Dynamic Cost (p/kWh)"] = (
+    df["Technology"].map(st.session_state.base_costs)
+    * (1 - discount / 100)
+).round(2)
 
-def summary(df, baseline):
-    base = df[df.Technology == baseline].iloc[0]
+df["Annual Cost"] = df["Electrical Demand (kWh)"] * df["Dynamic Cost (p/kWh)"] / 100
+df["CO2"] = df["Electrical Demand (kWh)"] * df["Technology"].map(st.session_state.co2_factors)
+df["Capex"] = df["Technology"].map(st.session_state.install_costs)
 
-    def payback(r):
-        saving = base["Annual Cost"] - r["Annual Cost"]
-        delta = r["Capex"] - base["Capex"]
-        if saving <= 0:
-            return "No payback"
-        if delta <= 0:
-            return "Immediate"
-        yrs = delta / saving
-        return f"{int(yrs)}y {int((yrs % 1) * 12)}m"
-
-    out = df.copy()
-    out["Annual Cost (£/yr)"] = out["Annual Cost"].round(2)
-    out["CO₂ (kg/yr)"] = out["CO2"].round(2)
-    out["Payback"] = out.apply(payback, axis=1)
-
-    return out[[
-        "Technology",
-        "Efficiency",
-        "Electrical Demand",
-        "Dynamic Cost",
-        "Annual Cost (£/yr)",
-        "CO₂ (kg/yr)",
-        "Capex",
-        "Payback"
-    ]].rename(columns={"Capex": "Installation Cost (£)"})
-
-st.subheader("Technology Summary — Scenario A")
-st.dataframe(summary(df_A, baseline_A), use_container_width=True, key="summary_A")
-
-if enable_B:
-    st.subheader("Technology Summary — Scenario B")
-    st.dataframe(summary(df_B, baseline_A), use_container_width=True, key="summary_B")
+base = df[df.Technology == baseline].iloc[0]
 
 # ==================================================
-# SIDE-BY-SIDE COMPARISON GRAPHS
+# PAYBACK (TECH-SPECIFIC GRANT)
 # ==================================================
 
-st.subheader("Scenario Comparison — Annual Cost (£/year)")
+def payback(row):
+    saving = base["Annual Cost"] - row["Annual Cost"]
+    raw_extra = row["Capex"] - base["Capex"]
 
-col1, col2 = st.columns(2)
+    if raw_extra <= 0:
+        return "Immediate (lower upfront cost)"
 
-with col1:
-    st.markdown("**Scenario A**")
-    st.plotly_chart(
-        px.bar(df_A, x="Technology", y="Annual Cost"),
-        use_container_width=True,
-        key="cost_A"
-    )
+    effective_extra = raw_extra
 
-with col2:
-    st.markdown("**Scenario B**")
-    if enable_B:
-        st.plotly_chart(
-            px.bar(df_B, x="Technology", y="Annual Cost"),
-            use_container_width=True,
-            key="cost_B"
-        )
-    else:
-        st.info("Enable Scenario B to view comparison")
+    if enable_grant and row["Technology"] == grant_tech:
+        if grant_type == "Flat amount (£)":
+            effective_extra -= grant_value
+        else:
+            effective_extra -= raw_extra * (grant_value / 100)
+        effective_extra = max(effective_extra, 0)
 
-st.subheader("Scenario Comparison — CO₂ Emissions (kg/year)")
+    if saving <= 0:
+        return "No payback (higher running cost)"
 
-col1, col2 = st.columns(2)
+    if effective_extra == 0:
+        return "Immediate (grant covers extra cost)"
 
-with col1:
-    st.markdown("**Scenario A**")
-    st.plotly_chart(
-        px.bar(df_A, x="Technology", y="CO2"),
-        use_container_width=True,
-        key="co2_A"
-    )
+    yrs = effective_extra / saving
+    return f"{int(yrs)}y {int((yrs % 1) * 12)}m"
 
-with col2:
-    st.markdown("**Scenario B**")
-    if enable_B:
-        st.plotly_chart(
-            px.bar(df_B, x="Technology", y="CO2"),
-            use_container_width=True,
-            key="co2_B"
-        )
-    else:
-        st.info("Enable Scenario B to view comparison")
+df["Payback vs baseline"] = df.apply(payback, axis=1)
+
+# ==================================================
+# SUMMARY TABLE
+# ==================================================
+
+st.subheader("Technology Summary")
+
+display = df.copy()
+display["Annual Cost (£/yr)"] = display["Annual Cost"].round(2)
+display["CO₂ (kg/yr)"] = display["CO2"].round(2)
+
+st.dataframe(
+    display[[
+        "Technology","Efficiency","Electrical Demand (kWh)",
+        "Dynamic Cost (p/kWh)","Annual Cost (£/yr)",
+        "CO₂ (kg/yr)","Capex","Payback vs baseline"
+    ]].rename(columns={"Capex":"Installation Cost (£)"}),
+    use_container_width=True
+)
+
+# ==================================================
+# GRAPHS
+# ==================================================
+
+st.subheader("Annual Running Cost (£/year)")
+fig_cost = px.bar(df, x="Technology", y="Annual Cost")
+fig_cost.update_traces(
+    hovertemplate="<b>%{x}</b><br>Annual Cost: £%{y:.2f}<extra></extra>"
+)
+fig_cost.update_yaxes(tickprefix="£", tickformat=",.2f")
+st.plotly_chart(fig_cost, use_container_width=True, key="annual_cost")
+
+st.subheader("Annual CO₂ Emissions (kg/year)")
+fig_co2 = px.bar(df, x="Technology", y="CO2")
+fig_co2.update_traces(
+    hovertemplate="<b>%{x}</b><br>CO₂ Emissions: %{y:.2f} kg/yr<extra></extra>"
+)
+fig_co2.update_yaxes(tickformat=",.2f")
+st.plotly_chart(fig_co2, use_container_width=True, key="co2")
 
 # ==================================================
 # CUMULATIVE CASHFLOW
 # ==================================================
 
-st.subheader("Cumulative Cashflow vs Baseline (Scenario A)")
+st.subheader("Cumulative Cashflow vs Baseline")
 
 years = np.arange(0, 21)
-base = df_A[df_A.Technology == baseline_A].iloc[0]
-
 fig = go.Figure()
-for _, r in df_A.iterrows():
-    cf = -(r.Capex - base.Capex) + (base["Annual Cost"] - r["Annual Cost"]) * years
-    fig.add_trace(go.Scatter(x=years, y=cf, mode="lines", name=r.Technology))
+
+for _, r in df.iterrows():
+    extra = r["Capex"] - base["Capex"]
+
+    if enable_grant and r["Technology"] == grant_tech:
+        if grant_type == "Flat amount (£)":
+            extra -= grant_value
+        else:
+            extra -= extra * (grant_value / 100)
+        extra = max(extra, 0)
+
+    cf = -extra + (base["Annual Cost"] - r["Annual Cost"]) * years
+
+    fig.add_trace(go.Scatter(
+        x=years,
+        y=cf,
+        mode="lines",
+        name=r.Technology,
+        hovertemplate=(
+            "<b>%{fullData.name}</b><br>"
+            "Year %{x}<br>"
+            "Cashflow: £%{y:.2f}<extra></extra>"
+        )
+    ))
 
 fig.add_hline(y=0, line_dash="dash")
 fig.update_layout(xaxis_title="Years", yaxis_title="Cumulative cashflow (£)")
-
 st.plotly_chart(fig, use_container_width=True, key="cashflow")
 
 # ==================================================
@@ -292,6 +267,7 @@ st.plotly_chart(fig, use_container_width=True, key="cashflow")
 # ==================================================
 
 st.caption(
-    "RDHEM Model — stable, fully keyed, scenario-based technology appraisal tool "
-    "for cost, carbon, and payback analysis."
+    "Grants are applied only to the selected technology and reduce extra upfront cost "
+    "relative to the baseline. Payback and cashflow exclude maintenance, financing, "
+    "and asset lifetime effects."
 )
