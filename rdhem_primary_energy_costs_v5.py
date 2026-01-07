@@ -100,9 +100,6 @@ eff_mult_B = st.sidebar.slider(
     disabled=not enable_B, key="effB"
 )
 
-st.sidebar.divider()
-lock_y = st.sidebar.checkbox("Lock Y-axis across charts", True, key="lockY")
-
 # ==================================================
 # SIDEBAR — GRANTS
 # ==================================================
@@ -140,9 +137,15 @@ grant_value = st.sidebar.number_input(
 st.sidebar.divider()
 st.sidebar.header("Fuel Prices")
 
-elec_price = st.sidebar.slider("Electricity price (p/kWh)", 5.0, 60.0, 30.0, 0.5, key="ep")
-gas_price = st.sidebar.slider("Gas price (p/kWh)", 2.0, 20.0, 10.0, 0.5, key="gp")
-gas_sc = st.sidebar.slider("Gas standing charge (£/yr)", 0, 400, 300, 10, key="gsc")
+elec_price = st.sidebar.slider(
+    "Electricity price (p/kWh)", 5.0, 60.0, 30.0, 0.5, key="ep"
+)
+gas_price = st.sidebar.slider(
+    "Gas price (p/kWh)", 2.0, 20.0, 10.0, 0.5, key="gp"
+)
+gas_sc = st.sidebar.slider(
+    "Gas standing charge (£/yr)", 0, 400, 300, 10, key="gsc"
+)
 
 # ==================================================
 # SIDEBAR — EDIT TECHNOLOGIES
@@ -154,17 +157,20 @@ st.sidebar.header("Edit Technologies")
 for tech in technologies:
     with st.sidebar.expander(tech):
         st.session_state.efficiencies[tech] = st.number_input(
-            "Efficiency / COP", 0.4, 6.0,
+            "Efficiency / COP",
+            0.4, 6.0,
             float(st.session_state.efficiencies[tech]), 0.05,
             key=f"eff_{tech}"
         )
         st.session_state.co2_factors[tech] = st.number_input(
-            "CO₂ factor (kg/kWh)", 0.01, 1.0,
+            "CO₂ factor (kg/kWh)",
+            0.01, 1.0,
             float(st.session_state.co2_factors[tech]), 0.01,
             key=f"co2_{tech}"
         )
         st.session_state.install_costs[tech] = st.number_input(
-            "Installation cost (£)", 1000, 50000,
+            "Installation cost (£)",
+            1000, 50000,
             int(st.session_state.install_costs[tech]), 500,
             key=f"capex_{tech}"
         )
@@ -184,13 +190,16 @@ def run_model(discount, eff_mult=1.0):
     elec_unit = (elec_price / 100) * (1 - discount / 100)
     gas_unit = gas_price / 100
 
-    df["Unit Cost (£/kWh)"] = df["Fuel type"].map({
+    df["Fuel Cost (£/yr)"] = df["Fuel Demand (kWh)"] * df["Fuel type"].map({
         "electric": elec_unit,
         "gas": gas_unit
     })
 
-    df["Fuel Cost (£/yr)"] = df["Fuel Demand (kWh)"] * df["Unit Cost (£/kWh)"]
-    df["Standing Charge (£/yr)"] = df["Fuel type"].map({"electric": 0.0, "gas": gas_sc})
+    df["Standing Charge (£/yr)"] = df["Fuel type"].map({
+        "electric": 0.0,
+        "gas": gas_sc
+    })
+
     df["Annual Cost (£/yr)"] = df["Fuel Cost (£/yr)"] + df["Standing Charge (£/yr)"]
 
     df["CO2 (kg/yr)"] = (
@@ -246,7 +255,6 @@ def format_table(styler):
     return styler.format({
         "Efficiency": "{:.2f}",
         "Fuel Demand (kWh)": "{:,.2f}",
-        "Unit Cost (£/kWh)": "£{:,.2f}",
         "Fuel Cost (£/yr)": "£{:,.2f}",
         "Standing Charge (£/yr)": "£{:,.2f}",
         "Annual Cost (£/yr)": "£{:,.2f}",
@@ -276,42 +284,30 @@ def stacked_cost_chart(df, title):
         var_name="Component",
         value_name="£/yr"
     )
-
-    df_stack["Component"] = pd.Categorical(
-        df_stack["Component"],
-        categories=component_order,
-        ordered=True
-    )
-
-    fig = px.bar(
-        df_stack,
-        x="Technology",
-        y="£/yr",
-        color="Component",
-        title=title
-    )
-
+    fig = px.bar(df_stack, x="Technology", y="£/yr", color="Component", title=title)
     fig.update_layout(
-        xaxis=dict(type="category", categoryorder="array", categoryarray=category_order),
-        bargap=0.2,
-        bargroupgap=0.0,
-        legend_title_text="",
-        legend=dict(orientation="h", y=1.02, x=1, xanchor="right")
+        xaxis=dict(categoryorder="array", categoryarray=category_order),
+        legend_title_text=""
     )
+    return fig
 
+def co2_chart(df, title):
+    fig = px.bar(df, x="Technology", y="CO2 (kg/yr)", title=title)
+    fig.update_layout(
+        xaxis=dict(categoryorder="array", categoryarray=category_order)
+    )
     fig.update_traces(
-        hovertemplate="<b>%{x}</b><br>%{legendgroup}: £%{y:.2f}/yr<extra></extra>"
+        hovertemplate="<b>%{x}</b><br>CO₂: %{y:.2f} kg/yr<extra></extra>"
     )
-
     return fig
 
 # ==================================================
-# CHARTS
+# CHARTS — COST
 # ==================================================
 
 st.subheader("Annual Cost Breakdown — Scenario A")
 st.plotly_chart(
-    stacked_cost_chart(df_A, "Fuel Cost with Standing Charge on Top"),
+    stacked_cost_chart(df_A, "Scenario A"),
     use_container_width=True,
     key="costA"
 )
@@ -319,9 +315,28 @@ st.plotly_chart(
 if enable_B:
     st.subheader("Annual Cost Breakdown — Scenario B")
     st.plotly_chart(
-        stacked_cost_chart(df_B, "Fuel Cost with Standing Charge on Top"),
+        stacked_cost_chart(df_B, "Scenario B"),
         use_container_width=True,
         key="costB"
+    )
+
+# ==================================================
+# CHARTS — CO₂
+# ==================================================
+
+st.subheader("CO₂ Emissions — Scenario A")
+st.plotly_chart(
+    co2_chart(df_A, "Scenario A"),
+    use_container_width=True,
+    key="co2A"
 )
 
-st.caption("Standing charge is stacked above fuel cost. All values shown to 2 decimal places.")
+if enable_B:
+    st.subheader("CO₂ Emissions — Scenario B")
+    st.plotly_chart(
+        co2_chart(df_B, "Scenario B"),
+        use_container_width=True,
+        key="co2B"
+    )
+
+st.caption("CO₂ calculated as fuel demand × technology-specific CO₂ factor.")
