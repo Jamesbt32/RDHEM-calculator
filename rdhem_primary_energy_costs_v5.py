@@ -20,13 +20,13 @@ st.title("RDHEM Heating Technology Cost, Energy, Carbon & Payback Model")
 st.info(
     "Electricity and gas prices are set separately. "
     "Only gas technologies incur a standing charge. "
-    "Scenario A and B results are shown with explicit labels below."
+    "Grants reduce extra capex vs the baseline technology and affect payback."
 )
 
 # ==================================================
 # FORMULAS
 # ==================================================
-show_formula = st.checkbox("Show calculation formulas")
+show_formula = st.checkbox("Show calculation formulas", key="show_formula")
 
 if show_formula:
     st.markdown("""
@@ -48,8 +48,17 @@ if show_formula:
     **Annual CO₂ emissions (kg/yr)**  
     = Fuel demand × Technology-specific CO₂ factor  
 
+    **Annual savings (£/yr)**  
+    = Baseline annual cost − Technology annual cost
+
+    **Extra capex (£)**  
+    = Technology capex − Baseline capex
+
+    **Effective extra capex (£)**  
+    = Extra capex − Grant (for selected technology only)
+
     **Payback period**  
-    = Effective extra capex ÷ Annual bill savings
+    = Effective extra capex ÷ Annual savings
     """)
 
 # ==================================================
@@ -80,7 +89,7 @@ heat_demand_lookup = {
 }
 
 # ==================================================
-# DEFAULT PARAMETERS
+# DEFAULT PARAMETERS (editable)
 # ==================================================
 defaults = {
     "efficiencies": {
@@ -129,14 +138,52 @@ eff_mult_B = st.sidebar.slider(
 )
 
 # ==================================================
+# SIDEBAR — GRANTS (RESTORED)
+# ==================================================
+st.sidebar.divider()
+st.sidebar.header("Grants / Subsidies")
+
+enable_grant = st.sidebar.checkbox(
+    "Apply technology-specific grant",
+    key="enable_grant"
+)
+
+grant_tech = st.sidebar.selectbox(
+    "Grant applies to technology",
+    technologies,
+    disabled=not enable_grant,
+    key="grant_tech"
+)
+
+grant_type = st.sidebar.radio(
+    "Grant type",
+    ["Flat amount (£)", "Percentage of extra capex"],
+    disabled=not enable_grant,
+    key="grant_type"
+)
+
+grant_value = st.sidebar.number_input(
+    "Grant value",
+    0.0, 30000.0, 7500.0, 500.0,
+    disabled=not enable_grant,
+    key="grant_value"
+)
+
+# ==================================================
 # SIDEBAR — FUEL PRICES (ABOVE EDIT TECHNOLOGIES)
 # ==================================================
 st.sidebar.divider()
 st.sidebar.header("Fuel Prices")
 
-elec_price = st.sidebar.slider("Electricity price (p/kWh)", 5.0, 60.0, 30.0, 0.5, key="elec_price")
-gas_price = st.sidebar.slider("Gas price (p/kWh)", 2.0, 20.0, 10.0, 0.5, key="gas_price")
-gas_sc = st.sidebar.number_input("Gas standing charge (£/yr)", 0.0, 500.0, 300.0, 1.0, key="gas_sc")
+elec_price = st.sidebar.slider(
+    "Electricity price (p/kWh)", 5.0, 60.0, 30.0, 0.5, key="elec_price"
+)
+gas_price = st.sidebar.slider(
+    "Gas price (p/kWh)", 2.0, 20.0, 10.0, 0.5, key="gas_price"
+)
+gas_sc = st.sidebar.number_input(
+    "Gas standing charge (£/yr)", 0.0, 500.0, 300.0, 1.0, key="gas_sc"
+)
 
 # ==================================================
 # SIDEBAR — EDIT TECHNOLOGIES
@@ -199,8 +246,51 @@ def run_model(discount: float, eff_mult: float = 1.0) -> pd.DataFrame:
 
     return df
 
-df_A = run_model(discount_A, 1.0)
-df_B = run_model(discount_B, eff_mult_B) if enable_B else None
+def format_payback_years(years: float) -> str:
+    y = int(years)
+    m = int(round((years - y) * 12))
+    if m == 12:
+        y += 1
+        m = 0
+    return f"{y}y {m}m"
+
+def apply_payback_and_grant(df: pd.DataFrame) -> pd.DataFrame:
+    base = df[df["Technology"] == baseline].iloc[0]
+    out = df.copy()
+
+    out["Annual Savings (£/yr)"] = base["Annual Cost (£/yr)"] - out["Annual Cost (£/yr)"]
+    out["Extra Capex (£)"] = out["Capex (£)"] - base["Capex (£)"]
+
+    # Apply grant only to selected technology and only to positive extra capex
+    out["Grant (£)"] = 0.0
+    if enable_grant:
+        mask = (out["Technology"] == grant_tech) & (out["Extra Capex (£)"] > 0)
+        if grant_type == "Flat amount (£)":
+            out.loc[mask, "Grant (£)"] = float(grant_value)
+        else:
+            out.loc[mask, "Grant (£)"] = out.loc[mask, "Extra Capex (£)"] * (float(grant_value) / 100.0)
+
+    out["Effective Extra Capex (£)"] = (out["Extra Capex (£)"] - out["Grant (£)"]).clip(lower=0.0)
+
+    def pb(row):
+        extra = row["Extra Capex (£)"]
+        eff_extra = row["Effective Extra Capex (£)"]
+        saving = row["Annual Savings (£/yr)"]
+
+        if extra <= 0:
+            return "Immediate"
+        if saving <= 0:
+            return "No payback"
+        if eff_extra <= 0:
+            return "Immediate"
+
+        return format_payback_years(eff_extra / saving)
+
+    out["Payback"] = out.apply(pb, axis=1)
+    return out
+
+df_A = apply_payback_and_grant(run_model(discount_A, 1.0))
+df_B = apply_payback_and_grant(run_model(discount_B, eff_mult_B)) if enable_B else None
 
 # ==================================================
 # TABLE STYLING + FORMATTING
@@ -214,31 +304,15 @@ def format_table(styler):
         "Efficiency": "{:.2f}",
         "Fuel Demand (kWh)": "{:,.2f}",
         "Unit Cost (p/kWh)": "{:.2f}",
-        "Standing Charge (£/yr)": "£{:,.2f}",   # 2 dp
+        "Standing Charge (£/yr)": "£{:,.2f}",
         "Annual Cost (£/yr)": "£{:,.2f}",
+        "Annual Savings (£/yr)": "£{:,.2f}",
         "CO2 (kg/yr)": "{:,.2f}",
         "Capex (£)": "£{:,.0f}",
+        "Extra Capex (£)": "£{:,.0f}",
+        "Grant (£)": "£{:,.0f}",
+        "Effective Extra Capex (£)": "£{:,.0f}",
     })
-
-# ==================================================
-# TECHNOLOGY SUMMARY TABLES (A then B underneath)
-# ==================================================
-st.subheader("Technology Summary")
-
-st.markdown("### Scenario A")
-st.dataframe(
-    format_table(df_A.style.apply(highlight_baseline_row, axis=1)),
-    use_container_width=True
-)
-
-if enable_B and df_B is not None:
-    st.markdown("### Scenario B")
-    st.dataframe(
-        format_table(df_B.style.apply(highlight_baseline_row, axis=1)),
-        use_container_width=True
-    )
-else:
-    st.info("Enable Scenario B to view Scenario B summary")
 
 # ==================================================
 # KEY OPTIONS (per scenario, used for chart colouring)
@@ -259,20 +333,10 @@ else:
     lowest_co2_B = None
 
 def colours_cost(df: pd.DataFrame, cheapest: str):
-    return [
-        AMBER if t == baseline else
-        GREEN if t == cheapest else
-        BLUE
-        for t in df["Technology"]
-    ]
+    return [AMBER if t == baseline else GREEN if t == cheapest else BLUE for t in df["Technology"]]
 
-def colours_co2(df: pd.DataFrame, lowest_co2: str):
-    return [
-        AMBER if t == baseline else
-        PURPLE if t == lowest_co2 else
-        BLUE
-        for t in df["Technology"]
-    ]
+def colours_co2(df: pd.DataFrame, lowest: str):
+    return [AMBER if t == baseline else PURPLE if t == lowest else BLUE for t in df["Technology"]]
 
 def add_legend_cost(fig: go.Figure):
     fig.add_trace(go.Bar(name="Baseline technology", x=[0], y=[0], marker_color=AMBER, visible="legendonly"))
@@ -281,6 +345,26 @@ def add_legend_cost(fig: go.Figure):
 def add_legend_co2(fig: go.Figure):
     fig.add_trace(go.Bar(name="Baseline technology", x=[0], y=[0], marker_color=AMBER, visible="legendonly"))
     fig.add_trace(go.Bar(name="Lowest-CO₂ option", x=[0], y=[0], marker_color=PURPLE, visible="legendonly"))
+
+# ==================================================
+# TECHNOLOGY SUMMARY TABLES (A then B underneath)
+# ==================================================
+st.subheader("Technology Summary")
+
+st.markdown("### Scenario A")
+st.dataframe(
+    format_table(df_A.style.apply(highlight_baseline_row, axis=1)),
+    use_container_width=True
+)
+
+if enable_B and df_B is not None:
+    st.markdown("### Scenario B")
+    st.dataframe(
+        format_table(df_B.style.apply(highlight_baseline_row, axis=1)),
+        use_container_width=True
+    )
+else:
+    st.info("Enable Scenario B to view Scenario B summary")
 
 # ==================================================
 # CHARTS (explicit labels, B underneath A)
@@ -313,5 +397,5 @@ if enable_B and df_B is not None:
 
 st.caption(
     "Amber = baseline · Green = cheapest (cost charts) · Purple = lowest-CO₂ (CO₂ charts). "
-    "Technology summary tables are shown above."
+    "Grant is applied only to the selected technology and only reduces positive extra capex vs baseline."
 )
